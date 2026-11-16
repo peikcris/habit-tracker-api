@@ -18,7 +18,7 @@ router.get('/', (req, res) => {
     FROM habits h
     WHERE h.user_id = ?
     ORDER BY h.id DESC
-  `).all(today(), req.user.id);
+ `).all(req.query.date || today(), req.user.id);
   res.json(habits);
 });
 
