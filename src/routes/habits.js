@@ -3,13 +3,33 @@ const db = require('../db');
 
 const router = express.Router();
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 const today = () => new Date().toISOString().slice(0, 10);
 
 const findHabit = (id, userId) =>
   db.prepare('SELECT * FROM habits WHERE id = ? AND user_id = ?').get(id, userId);
 
-// Get all habits for the current user
+// Count consecutive days ending today (or yesterday, if today isn't done yet)
+const calcStreak = (dates, todayStr) => {
+  const set = new Set(dates);
+  const toStr = (d) => d.toISOString().slice(0, 10);
+  const cursor = new Date(`${todayStr}T00:00:00Z`);
+
+  if (!set.has(toStr(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
+
+  let streak = 0;
+  while (set.has(toStr(cursor))) {
+    streak++;
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  return streak;
+};
+
+// Get all habits for the current user, with today's status and streak
 router.get('/', (req, res) => {
+  const date = DATE_RE.test(req.query.date || '') ? req.query.date : today();
+
   const habits = db.prepare(`
     SELECT h.id, h.name, h.created_at,
       EXISTS (
@@ -18,8 +38,26 @@ router.get('/', (req, res) => {
     FROM habits h
     WHERE h.user_id = ?
     ORDER BY h.id DESC
- `).all(req.query.date || today(), req.user.id);
-  res.json(habits);
+  `).all(date, req.user.id);
+
+  const completions = db.prepare(`
+    SELECT c.habit_id, c.date
+    FROM completions c
+    JOIN habits h ON h.id = c.habit_id
+    WHERE h.user_id = ?
+  `).all(req.user.id);
+
+  const byHabit = {};
+  for (const c of completions) {
+    (byHabit[c.habit_id] ||= []).push(c.date);
+  }
+
+  res.json(
+    habits.map((h) => ({
+      ...h,
+      streak: calcStreak(byHabit[h.id] || [], date),
+    }))
+  );
 });
 
 // Create a habit
@@ -67,7 +105,7 @@ router.post('/:id/complete', (req, res) => {
     return res.status(404).json({ error: 'Habit not found' });
   }
   const date = req.body?.date || today();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (!DATE_RE.test(date)) {
     return res.status(400).json({ error: 'Date must be YYYY-MM-DD' });
   }
   db.prepare('INSERT OR IGNORE INTO completions (habit_id, date) VALUES (?, ?)').run(habit.id, date);
